@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>2D Scroll Snap: Greedy Per-Axis Repair vs. Joint Pair Selection</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 24px;
+    font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    color: #202124;
+    background: #ffffff;
+    line-height: 1.5;
+  }
+  h1 { font-size: 20px; margin: 0 0 8px; }
+  p { margin: 0 0 12px; max-width: 760px; color: #3c4043; font-size: 14px; }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 12px;
+  }
+  button {
+    padding: 7px 14px;
+    border: 1px solid #dadce0;
+    border-radius: 6px;
+    background: #f8f9fa;
+    color: #202124;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  button.primary {
+    background: #1a73e8;
+    border-color: #1a73e8;
+    color: #ffffff;
+  }
+  button:hover { filter: brightness(0.96); }
+  .status {
+    padding: 10px 14px;
+    border-radius: 8px;
+    border: 1px solid #dadce0;
+    background: #f8f9fa;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 13px;
+    margin-bottom: 14px;
+    max-width: 600px;
+  }
+  .status.legacy { background: #fce8e6; border-color: #c5221f; color: #a50e0e; }
+  .status.corridor { background: #e6f4ea; border-color: #137333; color: #0d652d; }
+
+  .layout {
+    display: flex;
+    gap: 24px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  #scroller {
+    position: relative;
+    width: 600px;
+    height: 600px;
+    overflow: scroll;
+    scroll-snap-type: both mandatory;
+    border: 2px solid #1a73e8;
+    border-radius: 6px;
+    background:
+      linear-gradient(to right, #f1f3f4 1px, transparent 1px) 0 0 / 100px 100px,
+      linear-gradient(to bottom, #f1f3f4 1px, transparent 1px) 0 0 / 100px 100px;
+    background-attachment: local;
+  }
+
+  #canvas {
+    position: relative;
+    width: 1800px;
+    height: 1800px;
+  }
+
+  .area {
+    position: absolute;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  /* Snaps on both axes at (600, 600) — total distance 200px from (500, 500) */
+  #card-c {
+    left: 600px;
+    top: 600px;
+    width: 300px;
+    height: 300px;
+    background: rgba(230, 244, 234, 0.9);
+    border: 2px solid #137333;
+    color: #137333;
+    scroll-snap-align: start start;
+  }
+
+  /* Snaps X only at x = 590 (dx = 90), but scrolls off-screen if y > 540 */
+  #strip-x {
+    left: 590px;
+    top: 500px;
+    width: 120px;
+    height: 40px;
+    padding: 4px 8px;
+    background: rgba(254, 247, 224, 0.95);
+    border: 2px solid #b06000;
+    color: #b06000;
+    scroll-snap-align: none start;
+  }
+
+  /* Snaps Y only at y = 595 (dy = 95), but scrolls off-screen if x > 540 */
+  #strip-y {
+    left: 500px;
+    top: 595px;
+    width: 40px;
+    height: 120px;
+    padding: 6px 4px;
+    background: rgba(254, 247, 224, 0.95);
+    border: 2px solid #b06000;
+    color: #b06000;
+    scroll-snap-align: start none;
+  }
+
+  /* Snaps Y only at y = 100 (dy = 400), visible with Strip X at x = 590 */
+  #target-d {
+    left: 590px;
+    top: 100px;
+    width: 140px;
+    height: 100px;
+    background: rgba(252, 232, 230, 0.92);
+    border: 2px solid #c5221f;
+    color: #c5221f;
+    scroll-snap-align: start none;
+  }
+
+  /* Visual marker at (500, 500) — NOT a snap area */
+  #probe {
+    position: absolute;
+    left: 500px;
+    top: 500px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #1a73e8;
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+  }
+  #probe-label {
+    position: absolute;
+    left: 510px;
+    top: 486px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #1a73e8;
+    pointer-events: none;
+  }
+
+  .legend {
+    width: 280px;
+    font-size: 13px;
+    color: #3c4043;
+  }
+  .legend h2 { font-size: 14px; margin: 0 0 8px; color: #202124; }
+  .legend ul { padding-left: 18px; margin: 0 0 12px; }
+  .legend li { margin-bottom: 6px; }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+    background: #f1f3f4;
+    padding: 1px 4px;
+    border-radius: 3px;
+  }
+</style>
+</head>
+<body>
+  <h1>2D Scroll Snap: Greedy Per-Axis Repair vs. Joint Pair Selection</h1>
+  <p>
+    Click <strong>scrollTo(500, 500)</strong> (or manually pan/scroll so the blue dot at
+    <code>(500, 500)</code> sits at the top-left corner and release).
+    Legacy per-axis search locks <strong>Strip X</strong> (<code>x = 590</code>) and repairs Y by jumping
+    400px up to <strong>Far target D</strong> (<code>(590, 100)</code>, total 490px).
+    Joint 2D pair selection lands on <strong>Card C</strong> at <code>(600, 600)</code> (total 200px).
+  </p>
+
+  <div class="controls">
+    <button class="primary" id="btn-test">scrollTo(500, 500)</button>
+    <button id="btn-card-c">scrollTo(600, 600) [Card C]</button>
+    <button id="btn-origin">Reset to (0, 0)</button>
+    <button id="btn-unsnapped">Jump to (500, 500) with snap off (preview)</button>
+  </div>
+
+  <div id="status" class="status">Scroll offset: (0, 0)</div>
+
+  <div class="layout">
+    <div id="scroller">
+      <div id="canvas">
+        <div id="probe"></div>
+        <div id="probe-label">(500, 500)</div>
+
+        <div id="target-d" class="area">
+          Far target D<br>
+          <code>start none</code><br>
+          y = 100 (dy = 400)
+        </div>
+
+        <div id="strip-x" class="area">
+          Strip X (x=590)
+        </div>
+
+        <div id="strip-y" class="area">
+          Strip Y<br>(595)
+        </div>
+
+        <div id="card-c" class="area">
+          Card C<br>
+          <code>scroll-snap-align: start start</code><br>
+          Snaps at (600, 600)<br>
+          Distance from (500, 500): dx=100, dy=100 (total 200px)
+        </div>
+      </div>
+    </div>
+
+    <div class="legend">
+      <h2>Setup (600×600 container)</h2>
+      <ul>
+        <li><strong>Card C:</strong> <code>600..900 × 600..900</code>, <code>start start</code> → snaps at <code>(600, 600)</code> (total 200px).</li>
+        <li><strong>Strip X:</strong> <code>590..710 × 500..540</code>, <code>none start</code> → snaps X at <code>590</code> (dx = 90), invisible if <code>y &gt; 540</code>.</li>
+        <li><strong>Strip Y:</strong> <code>500..540 × 595..715</code>, <code>start none</code> → snaps Y at <code>595</code> (dy = 95), invisible if <code>x &gt; 540</code>.</li>
+        <li><strong>Far target D:</strong> <code>590..730 × 100..200</code>, <code>start none</code> → snaps Y at <code>100</code> (dy = 400), visible with Strip X.</li>
+      </ul>
+      <h2>Expected outcomes</h2>
+      <ul>
+        <li><strong>Legacy per-axis + repair:</strong> <code>(590, 100)</code> — Strip X + Far target D (490px jump).</li>
+        <li><strong>Corridor 2D pairs:</strong> <code>(600, 600)</code> — Card C (200px).</li>
+      </ul>
+    </div>
+  </div>
+
+<script>
+  const scroller = document.getElementById('scroller');
+  const status = document.getElementById('status');
+  let snapChangeInfo = '';
+
+  function updateStatus() {
+    const x = Math.round(scroller.scrollLeft);
+    const y = Math.round(scroller.scrollTop);
+    let verdict = '';
+    status.className = 'status';
+    if (x === 590 && y === 100) {
+      verdict = ' — LEGACY REPAIR: jumped 400px up to (Strip X, Far target D)';
+      status.classList.add('legacy');
+    } else if (x === 600 && y === 600) {
+      verdict = ' — CORRIDOR 2D PAIR: landed on Card C';
+      status.classList.add('corridor');
+    }
+    status.textContent = `Scroll offset: (${x}, ${y})${verdict}${snapChangeInfo}`;
+  }
+
+  scroller.addEventListener('scroll', updateStatus);
+  scroller.addEventListener('scrollend', updateStatus);
+  scroller.addEventListener('scrollsnapchange', (e) => {
+    const bx = e.snapTargetInline ? e.snapTargetInline.id : 'none';
+    const by = e.snapTargetBlock ? e.snapTargetBlock.id : 'none';
+    snapChangeInfo = ` | targets: inline=${bx}, block=${by}`;
+    updateStatus();
+  });
+
+  document.getElementById('btn-test').addEventListener('click', () => {
+    snapChangeInfo = '';
+    scroller.style.scrollSnapType = 'both mandatory';
+    scroller.scrollTo({ left: 500, top: 500, behavior: 'instant' });
+    updateStatus();
+  });
+
+  document.getElementById('btn-card-c').addEventListener('click', () => {
+    snapChangeInfo = '';
+    scroller.style.scrollSnapType = 'both mandatory';
+    scroller.scrollTo({ left: 600, top: 600, behavior: 'instant' });
+    updateStatus();
+  });
+
+  document.getElementById('btn-origin').addEventListener('click', () => {
+    snapChangeInfo = '';
+    scroller.style.scrollSnapType = 'both mandatory';
+    scroller.scrollTo({ left: 0, top: 0, behavior: 'instant' });
+    updateStatus();
+  });
+
+  document.getElementById('btn-unsnapped').addEventListener('click', () => {
+    scroller.style.scrollSnapType = 'none';
+    scroller.scrollTo({ left: 500, top: 500, behavior: 'instant' });
+    snapChangeInfo = ' | snap disabled (previewing starting view)';
+    updateStatus();
+  });
+
+  updateStatus();
+</script>
+</body>
+</html>
